@@ -1,8 +1,10 @@
 # backrooms_relay
 
-**Not deployed, and no generator exists yet.** Nothing posts to this relay today,
-so it has nothing to show. The page that reads it, `site/web/backrooms.html`,
-says "relay unreachable" when it cannot reach one.
+**Deployed, but no generator exists yet.** The relay runs on Railway with no
+volume, so turns would be kept in memory only. Nothing posts to it today, so it
+has nothing to show. The page that reads it, `site/web/backrooms.html`, says
+"generator not running" while no turns arrive and "relay unreachable" when it
+cannot reach the relay.
 
 ## What it does
 
