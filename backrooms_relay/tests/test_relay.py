@@ -366,7 +366,13 @@ def test_filter_passes_ordinary_lines(client, text):
     "origin,allowed",
     [
         ("https://flybrain.online", True),
-        ("https://flysite-abc123.vercel.app", True),
+        ("https://www.flybrain.online", True),
+        ("http://www.flybrain.online", False),
+        ("https://www.flybrain.online.evil.com", False),
+        ("https://flysite-abc123.vercel.app", False),
+        ("https://attacker.vercel.app", False),
+        ("https://attacker-anything.vercel.app", False),
+        ("null", False),
         ("http://flybrain.online", False),
         ("https://evil.com", False),
         ("https://vercel.app.evil.com", False),
@@ -376,6 +382,11 @@ def test_filter_passes_ordinary_lines(client, text):
 def test_cors_get(client, origin, allowed):
     r = client.get("/status", headers={"Origin": origin})
     assert (r.headers.get("access-control-allow-origin") == origin) is allowed
+
+
+def test_cors_preflight_vercel_app_refused(client):
+    r = client.options("/status", headers={"Origin": "https://attacker.vercel.app", "Access-Control-Request-Method": "GET"})
+    assert r.headers.get("access-control-allow-origin") is None
 
 
 def test_cors_preflight_post_not_allowed(client):

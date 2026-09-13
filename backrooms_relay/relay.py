@@ -72,8 +72,7 @@ ABOUT = (
     "personalities. No claim of consciousness, feelings or thinking is made."
 )
 
-ALLOWED_ORIGINS = ["https://flybrain.online"]
-ALLOWED_ORIGIN_REGEX = r"https://[a-z0-9]([a-z0-9-]*[a-z0-9])?\.vercel\.app"
+ALLOWED_ORIGINS = ["https://flybrain.online", "https://www.flybrain.online"]
 
 NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _.\-]{0,23}")
 META_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
@@ -243,7 +242,6 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=ALLOWED_ORIGINS,
-        allow_origin_regex=ALLOWED_ORIGIN_REGEX,
         allow_methods=["GET"],
         allow_headers=["Last-Event-ID"],
         allow_credentials=False,

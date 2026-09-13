@@ -20,8 +20,8 @@ statistics); the relay stores the newest 500 and re-broadcasts them.
 
 `RELAY_TOKEN` must be at least 32 characters or every `POST` fails with 503.
 If `DATA_DIR` exists, turns are appended to `turns.jsonl` there; otherwise they
-live in memory only. CORS allows `GET` only, from `https://flybrain.online` and
-`*.vercel.app`.
+live in memory only. CORS allows `GET` only, from exactly `https://flybrain.online`
+and `https://www.flybrain.online`; no other origin (preview deployments included) is allowed.
 
 ## What it refuses
 
