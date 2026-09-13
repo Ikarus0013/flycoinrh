@@ -237,7 +237,7 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 360px;min-height:0;positio
       </div>
       <div id="tx-scroll">
         <ol id="lines"></ol>
-        <div class="empty" id="tx-empty">No turns yet.</div>
+        <div class="empty" id="tx-empty">Nothing has been generated yet.</div>
       </div>
       <div class="credits">
         <p>Language model: LFM2.5-1.2B-Instruct by Liquid AI, to be used under the LFM Open License.</p>
@@ -1178,7 +1178,7 @@ function setState(kind) {
   const el = $('state');
   el.className = 'pill st-' + kind;
   $('state-text').textContent = {
-    running: 'generator running', stopped: 'generator stopped', connecting: 'connecting to the relay', unreachable: 'relay unreachable',
+    running: 'generator running', stopped: 'generator not running', connecting: 'connecting to the relay', unreachable: 'relay unreachable',
   }[kind] || kind;
   renderVia();
 }
@@ -1327,6 +1327,22 @@ function showIdle(msg) {
   subTxt.classList.add('idle');
   subTxt.textContent = msg;
 }
+// no turns to show: say so calmly, in the subtitles, the transcript and the statistics box
+function showEmpty(unreachable) {
+  S.cur = null;
+  if (R) R.speaker = -1;
+  if (unreachable) {
+    showIdle('The relay could not be reached, so no lines can be shown right now. The room itself is built.');
+    $('tx-empty').textContent = 'The relay could not be reached. No lines to show.';
+    $('tx-what').textContent = 'relay unreachable';
+    $('stats-who').textContent = 'no turn to show';
+  } else {
+    showIdle('The room is built. Nothing has been generated yet: the generator is not running.');
+    $('tx-empty').textContent = 'Nothing has been generated yet. Lines will appear here once the generator runs.';
+    $('tx-what').textContent = 'no turns yet';
+    $('stats-who').textContent = 'no turns yet';
+  }
+}
 function startTurn(t, replay) {
   const idx = flyIndexFor(t);
   if (!replay) addTranscript(t);
@@ -1375,12 +1391,12 @@ function lastConversation(list) {
 function startReplay(conv) {
   stopReplay();
   clearTranscript();
-  $('tx-what').textContent = 'last conversation · recorded';
   if (!conv.length) {
-    showIdle(S.mode === 'unreachable' ? 'The relay could not be reached, so there is no conversation to show.' : 'No recorded conversation yet.');
+    showEmpty(S.mode === 'unreachable');
     renderVia();
     return;
   }
+  $('tx-what').textContent = 'last conversation · recorded';
   for (const t of conv) addTranscript(t);
   S.replay = { conv, i: -1, timer: 0 };
   renderVia();
@@ -1514,6 +1530,7 @@ function enterRunning(fromTurn) {
     for (const t of S.history) if (!S.queue.includes(t)) addTranscript(t);
   }
   $('tx-what').textContent = 'recent turns';
+  $('tx-empty').textContent = 'Nothing has been generated yet.';
   setState('running');
   // the stream opens with ?after=lastKey, so lines posted while this page was not listening
   // are replayed by the relay and shown as backfill
@@ -1546,9 +1563,12 @@ async function pollStatus() {
   try {
     const was = S.running;
     applyStatus(await getJSON('/status'));
+    S.statusFails = 0;
     if (S.running !== was || S.mode === 'unreachable' || S.mode === 'connecting') decide();
   } catch {
-    if (!S.es && S.pollFails > 2) { S.reachable = false; if (S.mode !== 'unreachable') { S.running = null; enterStopped('unreachable'); } }
+    S.statusFails = (S.statusFails || 0) + 1;
+    // polling only runs while the generator runs, so two failed status checks in a row also count
+    if (!S.es && (S.pollFails > 2 || S.statusFails >= 2)) { S.reachable = false; if (S.mode !== 'unreachable') { S.running = null; enterStopped('unreachable'); } }
   }
 }
 
@@ -1570,7 +1590,7 @@ async function boot() {
   } else {
     for (const t of S.history) addTranscript(t);
     const last = S.history[S.history.length - 1];
-    if (last) showStatic(last, 'earlier'); else showIdle('Generator running. Waiting for the next line.');
+    if (last) showStatic(last, 'earlier'); else showIdle('Generator running. Nothing has been generated yet; waiting for the first line.');
     enterRunning(false);
   }
   setInterval(pollStatus, 30000);
