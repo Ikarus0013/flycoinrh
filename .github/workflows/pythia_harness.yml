@@ -22,9 +22,9 @@ on:
         type: string
         default: ""
       bots:
-        description: "practice bots to seat (mode=selfplay)"
+        description: "practice bots to seat (mode=selfplay). 5 = 6 players = 10 rounds = a full game that fits CI."
         type: string
-        default: "3"
+        default: "5"
   push:
     branches: [main]
     paths:
@@ -39,7 +39,7 @@ permissions:
 jobs:
   play:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -81,8 +81,10 @@ jobs:
           mkdir -p build/pythia
           MODE="${{ github.event.inputs.mode || 'selfplay' }}"
           CODE="${{ github.event.inputs.code || '' }}"
-          BOTS="${{ github.event.inputs.bots || '3' }}"
-          ARGS="--motor fly --mode $MODE --bots $BOTS --time-budget 2100 --max-steps 600"
+          BOTS="${{ github.event.inputs.bots || '5' }}"
+          # Full game: bots=5 -> 6 players -> 10 rounds. Budget the whole game and
+          # bail on a 4-min idle table. max-steps caps a single fly turn.
+          ARGS="--motor fly --mode $MODE --bots $BOTS --time-budget 3000 --max-steps 500 --idle-timeout 240"
           if [ "$MODE" = "join" ]; then ARGS="$ARGS --code $CODE"; fi
           echo "running: python pythia_harness.py $ARGS"
           python pythia_harness.py $ARGS | tee build/pythia/console.log
@@ -95,7 +97,9 @@ jobs:
             build/pythia/summary.json
             build/pythia/run.log
             build/pythia/console.log
+            build/pythia/game.webm
             build/pythia/landed.png
+            build/pythia/gameover.png
             build/pythia/final.png
             build/pythia/waiting.png
           if-no-files-found: warn

@@ -25,6 +25,14 @@ the landed card, the DNp09 firing rate at the moment of the click, the cursor
 trajectory, and before/after screenshots showing the card leave the hand and
 appear in the trick.
 
+RON-51 extends this to a COMPLETE game: the loop bids every round (harness taps
+the number), the fly plays every one of its trick turns (legality snap: an
+off-card DNp09 stop just re-samples, it never plays), the harness nudges the
+between-hand summaries along, and it runs until Pythia shows the final scores.
+The whole session is recorded to build/pythia/game.webm — the raw capture of a
+full game. `--mode join --code XXXX` points the fly at a table a human hosts, so
+the recorded game is a real person vs. the fly rather than fly vs. practice bots.
+
 Motors
 ------
   --motor fly   the real connectome (flysim + flyeye). Heavy: needs the CC-BY
@@ -240,9 +248,26 @@ class Pythia:
               .filter(c=>(c.offsetWidth||c.offsetHeight)&&!/wz-card--illegal/.test(c.className)).length;
             const bidCta=!!document.querySelector('.wz-bidsheet__cta');
             const yourTurn=/your turn/i.test(t) || /your bid/i.test(t);
-            return {legal, bidCta, yourTurn,
-                    over:/game over|final|winner/i.test(t)};
+            // "R7/15" style round indicator: which round of how many.
+            const m=t.match(/R\\s*(\\d+)\\s*\\/\\s*(\\d+)/);
+            const round=m?parseInt(m[1],10):null, rounds=m?parseInt(m[2],10):null;
+            return {legal, bidCta, yourTurn, round, rounds,
+                    over:/game over|final scores?|final standings|winner!|congratulations|play again|rematch/i.test(t)};
         }""")
+
+    ADVANCE_LABELS = ("Next round", "Next hand", "Next trick", "Continue",
+                      "Next", "Deal", "Play on", "Ready", "Start round")
+
+    def click_advance(self):
+        """Between tricks/rounds Pythia sometimes parks on a summary that needs a
+        push to deal the next hand. The harness owns these non-card taps (like the
+        bid and the room code); the fly only ever clicks cards. Never touches
+        Leave room / Rematch / Play again (those end or restart the game)."""
+        for lbl in self.ADVANCE_LABELS:
+            if self.click_text_button(lbl):
+                self.log(f"  harness advanced: '{lbl}'")
+                return True
+        return False
 
     def place_bid_if_needed(self):
         """Harness role: submit the fly's bid via the gold CTA so trick play can
@@ -311,12 +336,19 @@ def run(args):
     W, H = args.width, args.height
     result = {"result": "FAIL", "motor": motor.name, "mode": args.mode,
               "app": args.app, "landed": None, "misses": 0, "turns_played": 0,
-              "trajectory": [], "checks": {}}
+              "cards_played": 0, "rounds_seen": [], "round_last": None,
+              "rounds_total": None, "reached_final_round": False,
+              "game_over": False, "bids_placed": 0,
+              "landings": [], "trajectory": [], "checks": {}}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headful)
+        # Record the whole session to a webm — this is the RON-51 raw capture of a
+        # complete game. Video finalizes when the context closes.
         ctx = browser.new_context(viewport={"width": W, "height": H},
-                                  device_scale_factor=1)
+                                  device_scale_factor=1,
+                                  record_video_dir=str(OUT),
+                                  record_video_size={"width": W, "height": H})
         page = ctx.new_page()
         page.set_default_timeout(15000)     # never block a whole run on one call
         pj = Pythia(page, log)
@@ -341,51 +373,149 @@ def run(args):
         result["checks"]["started"] = True
         time.sleep(4)
 
-        # ---- play loop: bid via harness, cards via the fly -----------------
-        # Where the cursor STARTS is the harness's choice (a human's cursor starts
-        # wherever too); the fly still does the approach and the stop/click. Start
-        # it in the hand band so the fly's narrow retinal FOV can see a card and
-        # its descending neurons have something to react to.
-        cx = W / 2
-        cy = (0.82 * H) if args.start == "hand" else (H / 2)
+        # ---- full-game loop: bid each round, fly plays every trick ----------
+        # RON-51: run the WHOLE game, not just the first card. Every iteration
+        # reads the table's phase and does the one thing that phase calls for —
+        #   * bid showing        -> harness taps the bid CTA (a decision, so ours)
+        #   * fly's trick turn   -> hand the frame to the fly; it steers+stops on
+        #                           a legal card (legality snap: an off-card stop
+        #                           just re-samples, never plays)
+        #   * between hands      -> harness pushes the round-summary along
+        #   * anyone else's turn -> wait for the table to come back to us
+        # It ends when Pythia shows the final scores (game over), or bails out if
+        # the table goes idle far too long, so a stuck run can never hang the VM.
+        # Where the cursor STARTS each turn is the harness's choice (a human's
+        # cursor starts somewhere too); the fly owns the approach and the click.
+        def seat():
+            return W / 2, (0.82 * H) if args.start == "hand" else (H / 2)
+
+        cx, cy = seat()
         deadline = time.time() + args.time_budget
-        landed = None
+        last_progress = time.time()
+        final_idle_since = None
+        first_landing = None
         waits = 0
-        while time.time() < deadline and landed is None:
+        while time.time() < deadline:
             ph = pj.phase()
+            if ph.get("round"):
+                result["round_last"] = ph["round"]
+                result["rounds_total"] = ph.get("rounds")
+                if ph["round"] not in result["rounds_seen"]:
+                    result["rounds_seen"].append(ph["round"])
+                if ph.get("rounds") and ph["round"] >= ph["rounds"]:
+                    result["reached_final_round"] = True
             if waits % 5 == 0:
                 log(f"  waiting… phase={ph} :: {pj.body(90)}")
                 try:
                     page.screenshot(path=str(OUT / "waiting.png"))
                 except Exception:
                     pass
+
             if ph["over"]:
-                log("game over reached before a fly card landed"); break
+                log(f"GAME OVER — final table reached after "
+                    f"{result['cards_played']} fly cards over "
+                    f"{len(result['rounds_seen'])} round(s)")
+                result["game_over"] = True
+                try:
+                    page.screenshot(path=str(OUT / "gameover.png"))
+                except Exception:
+                    pass
+                break
+
             if ph["bidCta"]:
-                if not pj.place_bid_if_needed():
+                if pj.place_bid_if_needed():
+                    result["bids_placed"] += 1
+                    last_progress = time.time()
+                    final_idle_since = None
+                    cx, cy = seat()
+                else:
                     waits += 1
                 time.sleep(1); continue
-            if ph["legal"] == 0:
-                waits += 1
-                time.sleep(2); continue        # not the fly's turn yet
-            # It IS the fly's trick turn and there are legal cards. Hand over.
-            log(f"fly's turn — {ph['legal']} legal card(s). Letting the fly look.")
-            landed, cx, cy = fly_turn(pj, page, motor, cx, cy, W, H, args, result, log)
-            result["turns_played"] += 1
-            if landed is None:
-                cx = W / 2                     # next attempt: re-seat in the hand
-                cy = (0.82 * H) if args.start == "hand" else (H / 2)
 
-        result["landed"] = landed
-        ok = landed is not None and landed["legal"]
-        result["result"] = "PASS" if ok else "FAIL"
-        result["checks"]["fly_click_landed_on_card"] = bool(ok)
-        _finish(result, logs, page)
-        if ok:
-            log(f"RESULT: PASS — fly landed on {landed['card'] or landed['cls']} "
-                f"at step {landed['step']} (DNp09 {landed['stop_hz']} Hz)")
+            if ph["legal"] > 0:
+                # The fly's trick turn: legal cards in hand and it's ours to play.
+                log(f"fly's turn (round {ph.get('round')}) — {ph['legal']} legal "
+                    f"card(s). Letting the fly look.")
+                landed, cx, cy = fly_turn(pj, page, motor, cx, cy, W, H,
+                                          args, result, log)
+                result["turns_played"] += 1
+                if landed is not None:
+                    if landed["played"]:
+                        result["cards_played"] += 1
+                    result["landings"].append(landed)
+                    first_landing = first_landing or landed
+                    last_progress = time.time()
+                    final_idle_since = None
+                else:
+                    cx, cy = seat()            # re-seat and try again next loop
+                continue
+
+            # Not our turn (bots playing) or a between-hand summary. Nudge any
+            # "next round / continue" button along, else wait it out.
+            if pj.click_advance():
+                last_progress = time.time()
+                final_idle_since = None
+                time.sleep(1); continue
+            # If we already reached the last round, an idle summary with no next
+            # deal coming (no bid, no cards) IS the end of the game — there is no
+            # round rounds_total+1 to wait for. This is the reliable game-over
+            # signal; the `over` text regex above is the fast path when Pythia
+            # spells it out ("final scores" / "winner").
+            if result.get("reached_final_round"):
+                if final_idle_since is None:
+                    final_idle_since = time.time()
+                elif time.time() - final_idle_since > args.final_grace:
+                    log(f"final round ({result['rounds_total']}) done and no new "
+                        f"deal in {args.final_grace:.0f}s — GAME OVER")
+                    result["game_over"] = True
+                    try:
+                        page.screenshot(path=str(OUT / "gameover.png"))
+                    except Exception:
+                        pass
+                    break
+            if time.time() - last_progress > args.idle_timeout:
+                log(f"table idle >{args.idle_timeout:.0f}s with nothing to do — "
+                    f"stopping (game likely stalled)")
+                break
+            waits += 1
+            time.sleep(2)
+
+        # ---- verdict --------------------------------------------------------
+        result["landed"] = first_landing
+        all_legal = all(l["legal"] for l in result["landings"])
+        clicked_ok = first_landing is not None and first_landing["legal"]
+        complete = bool(result["game_over"]) and result["cards_played"] > 0
+        result["checks"]["fly_click_landed_on_card"] = bool(clicked_ok)
+        result["checks"]["all_landings_legal"] = bool(all_legal)
+        result["checks"]["game_completed"] = bool(result["game_over"])
+        # PASS for RON-51 = a COMPLETE game: the fly legally played cards across
+        # the rounds and the table reached game over. (A single legal landing with
+        # no game-over is the old RON-50 bar and is reported as PARTIAL.)
+        if complete and all_legal:
+            result["result"] = "PASS"
+        elif clicked_ok:
+            result["result"] = "PARTIAL"
         else:
-            log("RESULT: FAIL — no legal-card landing within the budget")
+            result["result"] = "FAIL"
+        _finish(result, logs, page)
+        log(f"RESULT: {result['result']} — fly played {result['cards_played']} "
+            f"card(s) over {len(result['rounds_seen'])} round(s); "
+            f"game_over={result['game_over']}, all_legal={all_legal}")
+
+        # Close the context so Playwright flushes the video, then name it.
+        try:
+            vid = page.video
+            ctx.close()
+            if vid:
+                src = Path(vid.path())
+                dst = OUT / "game.webm"
+                if src.exists():
+                    src.replace(dst)
+                    result["video"] = dst.name
+                    log(f"raw capture saved: {dst.name} ({dst.stat().st_size} bytes)")
+                    (OUT / "summary.json").write_text(json.dumps(result, indent=2))
+        except Exception as e:
+            log(f"video finalize note: {e}")
         browser.close()
     return result
 
@@ -498,7 +628,12 @@ def main():
     ap.add_argument("--max-steps", type=int, default=400,
                     help="control steps the fly gets per trick turn")
     ap.add_argument("--time-budget", type=float, default=1500,
-                    help="seconds for the whole run")
+                    help="seconds for the whole run (a full game needs headroom)")
+    ap.add_argument("--idle-timeout", type=float, default=240,
+                    help="bail out if the table has nothing for us this long")
+    ap.add_argument("--final-grace", type=float, default=25,
+                    help="after the last round, wait this long with no new deal "
+                         "before declaring the game over")
     ap.add_argument("--headful", action="store_true")
     args = ap.parse_args()
     res = run(args)
