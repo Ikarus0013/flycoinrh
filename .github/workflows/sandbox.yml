@@ -52,7 +52,7 @@ jobs:
       - name: Fetch the CC-BY connectome (public bucket, no account)
         run: |
           mkdir -p data
-          base="https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data"
+          base="https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data/flat-connectome"
           echo "annotations (14 MB) ..."
           curl -fSL "$base/body-annotations-male-cns-v1.0-minconf-0.5.feather" -o data/body-annotations.feather
           echo "neurotransmitters (42 MB) ..."
