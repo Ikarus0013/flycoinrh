@@ -1,0 +1,8 @@
+# The Pythia harness: everything the headless brain+eye+motor needs, plus a
+# real browser to drive the live table. Still no wallet, no chain library.
+numpy==2.4.2
+scipy==1.17.1
+pandas==3.0.1
+pyarrow==23.0.1     # reads the CC-BY .feather connectome tables
+Pillow==12.2.0      # screenshot -> grayscale for the fly's eye
+playwright==1.55.0  # drives Chromium at the live playpythia.com table

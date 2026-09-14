@@ -1,0 +1,101 @@
+name: pythia-fly-plays
+
+# The fly plays Pythia, Method A: a throwaway ephemeral GitHub-hosted VM (never
+# a laptop) builds the 165,122-neuron connectome, launches a real Chromium at
+# the LIVE table on wizzard-qeeq.onrender.com, and lets the fly's descending
+# neurons drive a cursor onto a card. Still no wallet and no chain library
+# anywhere in this fork — the browser here plays a card game, nothing else.
+#
+# Inputs let you point it at a live table you host (mode=join + a room code)
+# instead of the default self-play table (host + practice bots).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "selfplay (host + bots) or join (Ron's table)"
+        type: choice
+        options: [selfplay, join]
+        default: selfplay
+      code:
+        description: "room code (mode=join only)"
+        type: string
+        default: ""
+      bots:
+        description: "practice bots to seat (mode=selfplay)"
+        type: string
+        default: "3"
+  push:
+    branches: [main]
+    paths:
+      - "pythia_harness.py"
+      - ".github/workflows/pythia_harness.yml"
+      - "flyeye.py"
+      - "flysim.py"
+
+permissions:
+  contents: read
+
+jobs:
+  play:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (browser yes, wallet/chain no)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-pythia.txt
+          python -m playwright install --with-deps chromium
+          pip list
+
+      - name: Prove nothing chain/wallet survived the strip
+        run: |
+          for f in rhwallet.py rhlive.py rhdryrun.py rhprovider.py check_wallet.py \
+                   pons.py executor.py tradebook.py voice.py xpost.py backroom.py; do
+            if [ -e "$f" ]; then echo "  LEFTOVER: $f" && exit 1; else echo "  gone: $f"; fi
+          done
+          for m in eth_account eth_utils eth_abi web3; do
+            if python -c "import $m" 2>/dev/null; then echo "  IMPORTABLE: $m" && exit 1; else echo "  absent: $m"; fi
+          done
+
+      - name: Fetch the CC-BY connectome (public bucket, no account)
+        run: |
+          mkdir -p data
+          base="https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data/flat-connectome"
+          curl -fSL "$base/body-annotations-male-cns-v1.0-minconf-0.5.feather" -o data/body-annotations.feather
+          curl -fSL "$base/body-neurotransmitters-male-cns-v1.0.feather" -o data/body-neurotransmitters.feather
+          curl -fSL "$base/connectome-weights-male-cns-v1.0-minconf-0.5.feather" -o data/connectome-weights.feather
+          ls -lh data
+
+      - name: Build the connectome graph
+        run: python build_graph.py
+
+      - name: The fly plays a live Pythia table
+        run: |
+          mkdir -p build/pythia
+          MODE="${{ github.event.inputs.mode || 'selfplay' }}"
+          CODE="${{ github.event.inputs.code || '' }}"
+          BOTS="${{ github.event.inputs.bots || '3' }}"
+          ARGS="--motor fly --mode $MODE --bots $BOTS --time-budget 2100 --max-steps 600"
+          if [ "$MODE" = "join" ]; then ARGS="$ARGS --code $CODE"; fi
+          echo "running: python pythia_harness.py $ARGS"
+          python pythia_harness.py $ARGS | tee build/pythia/console.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pythia-fly-proof
+          path: |
+            build/pythia/summary.json
+            build/pythia/run.log
+            build/pythia/console.log
+            build/pythia/landed.png
+            build/pythia/final.png
+            build/pythia/waiting.png
+          if-no-files-found: warn
