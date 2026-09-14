@@ -390,17 +390,57 @@ def run(args):
     return result
 
 
+def _arena(boxes, W, H, inset=6):
+    """The on-card-safe play area the harness confines the fly's cursor to. The
+    harness owns the cursor's *bounds* (as it owns the start position and all
+    typing); the fly still owns the steer and the stop inside it. Without a bound,
+    a connectome DN readout with any net vertical drift walks the cursor off the
+    cards into empty felt and pins at the viewport edge — exactly what run
+    34830208802 did (2937/3000 frames stuck at y=1198, only 26 ever in the card
+    band, 61 DNp09 stops all over empty felt).
+
+    Horizontal extent = the full span of the legal cards (so the fly can steer
+    across every choice); vertical extent = the *intersection* of the cards'
+    heights, inset a few px, so wherever the cursor pins it is still inside a card
+    rather than in the gap just below the fan. For a single legal card that
+    intersection is simply the card, so the first DNp09 stop lands. If a heavy fan
+    makes the intersection empty, fall back to the union so the cursor still has a
+    band to work in."""
+    x0 = min(b["cx"] - b["w"] / 2 for b in boxes) + inset
+    x1 = max(b["cx"] + b["w"] / 2 for b in boxes) - inset
+    ytop = max(b["cy"] - b["h"] / 2 for b in boxes) + inset   # lowest card top
+    ybot = min(b["cy"] + b["h"] / 2 for b in boxes) - inset   # highest card bottom
+    if ybot <= ytop:                                          # fan too spread: union
+        ytop = min(b["cy"] - b["h"] / 2 for b in boxes) + inset
+        ybot = max(b["cy"] + b["h"] / 2 for b in boxes) - inset
+    return (max(1, x0), max(1, ytop), min(W - 2, x1), min(H - 2, ybot))
+
+
 def fly_turn(pj, page, motor, cx, cy, W, H, args, result, log):
     """One trick turn: the fly looks, walks and stops until DNp09 fires over a
     legal card. Returns (landing_or_None, cx, cy) so the caller can continue the
     cursor from where the fly left it."""
     before_hand = pj.hand_count()
+    # Confine the cursor to the legal-card arena and re-seat it onto a card, so the
+    # fly's narrow retinal FOV always has a card in view and its DN drift can't sink
+    # into empty felt. The fly still chooses which card (steer) and when (DNp09 stop).
+    boxes = pj.legal_cards()
+    if boxes:
+        ax0, ay0, ax1, ay1 = _arena(boxes, W, H)
+        cx = float(np.clip(cx, ax0, ax1))
+        cy = float(np.clip(cy, ay0, ay1))
+        if not (ax0 <= cx <= ax1 and ay0 <= cy <= ay1):
+            cx, cy = boxes[0]["cx"], boxes[0]["cy"]
+        log(f"  arena x[{ax0:.0f},{ax1:.0f}] y[{ay0:.0f},{ay1:.0f}] "
+            f"over {len(boxes)} legal card(s); cursor re-seated @({cx:.0f},{cy:.0f})")
+    else:
+        ax0, ay0, ax1, ay1 = 1, 1, W - 2, H - 2
     for step in range(args.max_steps):
         png = page.screenshot()
         img = to_gray(png, W, H)
         dx, dy, click, info = motor.step(img, cx, cy, seed=step)
-        cx = float(np.clip(cx + dx, 1, W - 2))
-        cy = float(np.clip(cy + dy, 1, H - 2))
+        cx = float(np.clip(cx + dx, ax0, ax1))
+        cy = float(np.clip(cy + dy, ay0, ay1))
         try:
             page.mouse.move(cx, cy)             # real hover under the cursor
         except Exception:
