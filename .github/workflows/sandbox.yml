@@ -1,0 +1,80 @@
+name: sandbox-brain-eye-motor
+
+# A throwaway cloud sandbox - never a local laptop. Each run is a fresh,
+# ephemeral GitHub-hosted Ubuntu VM that is destroyed when the job ends. It
+# downloads the CC-BY connectome, builds the graph, and proves a headless
+# brain + eye + motor run end to end. There is no wallet, no chain library and
+# no browser anywhere in this fork, so nothing here can spend.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "sandbox_demo.py"
+      - ".github/workflows/sandbox.yml"
+      - "flysim.py"
+      - "flyeye.py"
+      - "build_graph.py"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (no server, no browser, no chain)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-sandbox.txt
+          pip list
+
+      - name: Prove nothing chain/wallet survived the strip
+        run: |
+          echo "files that must not exist:"
+          for f in rhwallet.py rhlive.py rhdryrun.py rhprovider.py check_wallet.py \
+                   pons.py executor.py tradebook.py voice.py xpost.py backroom.py; do
+            if [ -e "$f" ]; then echo "  LEFTOVER: $f" && exit 1; else echo "  gone: $f"; fi
+          done
+          echo "no chain libraries importable:"
+          for m in eth_account eth_utils eth_abi web3; do
+            if python -c "import $m" 2>/dev/null; then echo "  IMPORTABLE: $m" && exit 1; else echo "  absent: $m"; fi
+          done
+
+      - name: Fetch the CC-BY connectome (public bucket, no account)
+        run: |
+          mkdir -p data
+          base="https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data"
+          echo "annotations (14 MB) ..."
+          curl -fSL "$base/body-annotations-male-cns-v1.0-minconf-0.5.feather" -o data/body-annotations.feather
+          echo "neurotransmitters (42 MB) ..."
+          curl -fSL "$base/body-neurotransmitters-male-cns-v1.0.feather" -o data/body-neurotransmitters.feather
+          echo "weights (1.1 GB) ..."
+          curl -fSL "$base/connectome-weights-male-cns-v1.0-minconf-0.5.feather" -o data/connectome-weights.feather
+          ls -lh data
+
+      - name: Build the connectome graph
+        run: python build_graph.py
+
+      - name: Headless brain + eye + motor run
+        run: |
+          mkdir -p build/sandbox
+          python sandbox_demo.py | tee build/sandbox/run.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sandbox-proof
+          path: |
+            build/sandbox/run.log
+            build/sandbox/summary.json
+            build/sandbox/trajectory.png
+          if-no-files-found: warn

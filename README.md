@@ -1,5 +1,14 @@
 # flycoinrh
 
+> **⚠️ Stripped fork.** This fork has had **every wallet, chain, trade and
+> coin-launch path removed** — there is nothing here that can spend. The
+> connectome brain, the eye and the motor are kept; the money side is gone.
+> See **[SANDBOX.md](SANDBOX.md)** for exactly what was removed and for the
+> headless brain+eye+motor proof that runs on a throwaway cloud sandbox
+> (`.github/workflows/sandbox.yml`). Anything below that mentions a wallet,
+> `rhwallet.py`, launching tokens or Robinhood Chain describes **upstream** and
+> no longer applies here.
+
 A real fruit fly brain, simulated neuron by neuron, driving the
 [pons launchpad](https://www.ponsfamily.com/launchpad) on Robinhood Chain.
 

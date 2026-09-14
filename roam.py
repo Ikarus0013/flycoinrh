@@ -177,8 +177,16 @@ def env(name, default=""):
 
 
 def backroom_on():
-    """The room exists only when someone turned it on."""
-    return env("FLY_BACKROOM") == "1"
+    """
+    Permanently OFF in this fork.
+
+    The "backroom" was the one place a fly's click became a commit: a stop on a
+    coin card turned into an HTTP POST to the paper executor. This fork deleted
+    the executor, the trade ledger and every chain library, so there is nothing
+    for the room to talk to. It is hard-disabled here at the root - not gated on
+    an env flag - so no configuration can reopen a commit path. See SANDBOX.md.
+    """
+    return False
 
 
 def backroom_share():
@@ -536,21 +544,11 @@ def load_room():
     roamer without FLY_BACKROOM=1 pulls in nothing of the coin side at all -
     not the nose, not the listing, not a single chain library.
     """
-    if STATE.get("room") is None and backroom_on():
-        import backroom
-        from olfaction import Nose
-        fb, pilot = load_brain()
-        if STATE.get("mb") is None:
-            say("the backroom stays shut: there is no mushroom body for it to teach")
-            return None
-        nose = Nose(fb, equal_sniff=EQUAL_SNIFF)
-        nose.max_hz = calibration.SETTINGS[calibration.CHOSEN]["odour_max_hz"]
-        STATE["room"] = backroom.Room(
-            fb, pilot, STATE["mb"], nose, STATE["gains"], state_dir(),
-            executor_url(), env("FLY_INTENT_TOKEN"))
-        say(f"the backroom is open: {backroom_url()} -> paper executor at "
-            f"{executor_url()}, {nose.cells:,} receptor neurons")
-    return STATE.get("room")
+    # Hard-disabled in this fork: backroom_on() is always False, backroom.py,
+    # olfaction.py and the paper executor are deleted, so there is no room to
+    # build and no commit path to open. The fly still roams and reads pages; it
+    # simply has nowhere its click turns into a trade.
+    return None
 
 
 def open_room():

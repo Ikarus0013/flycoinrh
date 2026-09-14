@@ -1,8 +1,0 @@
-.venv
-.env
-.env.*
-tests
-__pycache__
-.pytest_cache
-*.pyc
-turns.jsonl

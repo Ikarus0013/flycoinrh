@@ -1,0 +1,10 @@
+# Everything a pure headless brain + eye + motor run needs, and nothing else.
+#
+# No web server (fastapi/uvicorn), no browser (playwright), and - as with the
+# whole fork - no chain libraries. This is what .github/workflows/sandbox.yml
+# installs to build the connectome and drive the fly across a synthetic screen.
+numpy==2.4.2
+scipy==1.17.1
+pandas==3.0.1
+pyarrow==23.0.1     # reads the CC-BY .feather connectome tables
+Pillow==12.2.0      # renders the cursor-trajectory screenshot artifact
