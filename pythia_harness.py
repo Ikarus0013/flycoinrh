@@ -342,7 +342,12 @@ def run(args):
         time.sleep(4)
 
         # ---- play loop: bid via harness, cards via the fly -----------------
-        cx, cy = W / 2, H / 2
+        # Where the cursor STARTS is the harness's choice (a human's cursor starts
+        # wherever too); the fly still does the approach and the stop/click. Start
+        # it in the hand band so the fly's narrow retinal FOV can see a card and
+        # its descending neurons have something to react to.
+        cx = W / 2
+        cy = (0.82 * H) if args.start == "hand" else (H / 2)
         deadline = time.time() + args.time_budget
         landed = None
         waits = 0
@@ -365,8 +370,11 @@ def run(args):
                 time.sleep(2); continue        # not the fly's turn yet
             # It IS the fly's trick turn and there are legal cards. Hand over.
             log(f"fly's turn — {ph['legal']} legal card(s). Letting the fly look.")
-            landed = fly_turn(pj, page, motor, cx, cy, W, H, args, result, log)
+            landed, cx, cy = fly_turn(pj, page, motor, cx, cy, W, H, args, result, log)
             result["turns_played"] += 1
+            if landed is None:
+                cx = W / 2                     # next attempt: re-seat in the hand
+                cy = (0.82 * H) if args.start == "hand" else (H / 2)
 
         result["landed"] = landed
         ok = landed is not None and landed["legal"]
@@ -384,7 +392,8 @@ def run(args):
 
 def fly_turn(pj, page, motor, cx, cy, W, H, args, result, log):
     """One trick turn: the fly looks, walks and stops until DNp09 fires over a
-    legal card. Returns the landing dict, or None if it never lands this turn."""
+    legal card. Returns (landing_or_None, cx, cy) so the caller can continue the
+    cursor from where the fly left it."""
     before_hand = pj.hand_count()
     for step in range(args.max_steps):
         png = page.screenshot()
@@ -414,15 +423,15 @@ def fly_turn(pj, page, motor, cx, cy, W, H, args, result, log):
                 page.screenshot(path=str(OUT / "landed.png"))
             except Exception:
                 pass
-            return {"step": step, "x": round(cx, 1), "y": round(cy, 1),
-                    "legal": True, "played": bool(played),
-                    "card": under["txt"], "cls": under["cls"],
-                    "stop_hz": info.get("stop_hz", 0.0)}
+            return ({"step": step, "x": round(cx, 1), "y": round(cy, 1),
+                     "legal": True, "played": bool(played),
+                     "card": under["txt"], "cls": under["cls"],
+                     "stop_hz": info.get("stop_hz", 0.0)}, cx, cy)
         else:
             result["misses"] += 1               # clicked, but not on a legal card
             log(f"  DNp09 stop @({cx:.0f},{cy:.0f}) missed "
                 f"({(under or {}).get('cls','no card')}) — fly keeps looking")
-    return None
+    return None, cx, cy
 
 
 def _finish(result, logs, page):
@@ -444,6 +453,8 @@ def main():
     ap.add_argument("--motor", choices=["fly", "lum"], default="fly")
     ap.add_argument("--width", type=int, default=900)
     ap.add_argument("--height", type=int, default=1200)
+    ap.add_argument("--start", choices=["hand", "center"], default="hand",
+                    help="where the harness parks the cursor before the fly looks")
     ap.add_argument("--max-steps", type=int, default=400,
                     help="control steps the fly gets per trick turn")
     ap.add_argument("--time-budget", type=float, default=1500,
