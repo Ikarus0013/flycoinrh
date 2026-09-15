@@ -13,8 +13,11 @@ legal card, that real pixel is clicked and the card is played.
 The division of labour is the whole point of Method A, and it is strict:
 
   * THE HARNESS types. It joins/creates the table, sets the name, seats the
-    practice bots, places the fly's bid. Anything that needs a keyboard is the
-    harness, never the fly — the fly has no keyboard (roam.py, "No typing").
+    practice bots, readies the fly's seat up in the lobby, places the fly's bid.
+    Anything that needs a keyboard or is a lobby/menu tap is the harness, never
+    the fly — the fly has no keyboard (roam.py, "No typing"). In join mode the
+    seat starts NOT READY and the human host cannot start until it is ready, so
+    the harness taps 'I'm ready' the moment it lands in the lobby.
   * THE FLY clicks cards. Its entire contribution is a cursor and a stop. It is
     reacting to light on a screen, not reading the game or choosing a card;
     what comes out of the connectome is a cursor that lands on a card.
@@ -240,6 +243,48 @@ class Pythia:
             time.sleep(3)
         return False
 
+    def is_ready(self):
+        """True once the fly's own seat shows READY. Pythia flips the primary
+        'I'm ready' button into a 'Not ready yet' un-ready toggle the moment the
+        seat is ready, so that toggle's presence is the reliable ready signal."""
+        return self.pg.evaluate(r"""()=>{
+            return [...document.querySelectorAll('button')].some(b=>
+              (b.offsetWidth||b.offsetHeight) && /not\s*ready\s*yet/i.test(b.innerText||''));
+        }""")
+
+    def in_lobby(self):
+        """Join-mode pre-game: the human host hasn't started yet. Detected from
+        the lobby's own copy so we never mistake a between-hand summary for it."""
+        return self.pg.evaluate(r"""()=>{
+            const t=document.body.innerText||'';
+            return /waiting for the host|need\s*\d[\s\S]*to start|tap when you'?re set|i'?m ready/i.test(t);
+        }""")
+
+    def ready_up(self, wait_s=20):
+        """Join mode: the fly's seat joins NOT READY and a human host cannot start
+        the game until every seat is ready (Ron: 'the fly has to ready up before I
+        can start'). Readying is a lobby setup tap, not a card play, so the harness
+        owns it — like the room code and the bid — because the fly has no keyboard
+        and never readies itself. Clicks the gold 'I'm ready' button, matched
+        loosely (contains 'ready' but NOT 'not ready', so it can never tap the
+        'Not ready yet' toggle back off), and confirms the seat flips to READY."""
+        t0 = time.time()
+        while time.time() - t0 < wait_s:
+            if self.is_ready():
+                self.log("lobby: fly seat is READY — waiting for host to start")
+                return True
+            clicked = self.pg.evaluate(r"""()=>{
+                const b=[...document.querySelectorAll('button')].find(x=>
+                  (x.offsetWidth||x.offsetHeight) && x.offsetParent!==null &&
+                  /ready/i.test(x.innerText||'') && !/not\s*ready/i.test(x.innerText||''));
+                if(b){b.click();return (b.innerText||'').trim();}return null;}""")
+            if clicked:
+                self.log(f"lobby: harness tapped ready button {clicked!r}")
+                time.sleep(2)
+            else:
+                time.sleep(1.5)
+        return self.is_ready()
+
     # -- phase detection -----------------------------------------------------
     def phase(self):
         return self.pg.evaluate("""()=>{
@@ -363,6 +408,11 @@ def run(args):
                 raise SystemExit("--mode join needs --code")
             pj.join_table(args.name, args.code.upper())
             result["code"] = args.code.upper()
+            # The seat joins NOT READY; the human host can't start until it's
+            # ready. Harness readies the fly up (setup tap, not a card play).
+            result["checks"]["readied"] = bool(pj.ready_up())
+            log(f"join lobby: readied={result['checks']['readied']} — "
+                f"host can now start the game")
         else:
             code = pj.create_table(args.name, args.bots)
             result["code"] = code
@@ -404,6 +454,22 @@ def run(args):
                     result["rounds_seen"].append(ph["round"])
                 if ph.get("rounds") and ph["round"] >= ph["rounds"]:
                     result["reached_final_round"] = True
+            # Join mode: while the human host hasn't started, the fly sits in the
+            # lobby. Keep it READY (re-tap if the seat ever reverts) and treat the
+            # wait as live progress so the idle-stall bail never fires on a
+            # legitimate wait-for-host — a human takes their time to start.
+            if args.mode == "join" and ph["legal"] == 0 and not ph["bidCta"] \
+                    and not ph["over"] and pj.in_lobby():
+                if not pj.is_ready():
+                    pj.ready_up(wait_s=8)
+                last_progress = time.time()
+                final_idle_since = None
+                if waits % 5 == 0:
+                    log("  lobby: fly readied, waiting for host to start the game…")
+                waits += 1
+                time.sleep(3)
+                continue
+
             if waits % 5 == 0:
                 log(f"  waiting… phase={ph} :: {pj.body(90)}")
                 try:
