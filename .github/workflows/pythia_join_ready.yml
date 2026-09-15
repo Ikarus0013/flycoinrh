@@ -1,0 +1,53 @@
+name: pythia-join-ready
+
+# RON-50 regression proof for the join-mode fix (commit 8f1f500): in join mode
+# the fly's seat lands NOT READY and the human host cannot start until it is
+# ready. This test drives two browser roles on the LIVE table (host + fly
+# joiner) and proves the harness readies the fly up so the host's "Start game"
+# unlocks. No connectome and no fly brain — readying is a pure harness lobby
+# tap — so this is fast (Chromium only) and self-contained (no Ron table needed).
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "verify_join_ready.py"
+      - "pythia_harness.py"
+      - ".github/workflows/pythia_join_ready.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  join-ready:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (Chromium only — no connectome)
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy==2.4.2 playwright==1.55.0
+          python -m playwright install --with-deps chromium
+
+      - name: Two roles on the live table — fly readies, host can start
+        run: |
+          mkdir -p build/pythia
+          set -o pipefail
+          python verify_join_ready.py | tee build/pythia/join_ready.console.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pythia-join-ready-proof
+          path: |
+            build/pythia/join_ready.json
+            build/pythia/join_ready.console.log
+            build/pythia/jr_*.png
+          if-no-files-found: warn
