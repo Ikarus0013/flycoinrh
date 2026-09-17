@@ -1,0 +1,210 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fly-cam — watch the fly decide</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Fly-cam: a viewer for a Pythia harness run (RON-50 / RON-48b).
+  Point it at one run's artifact folder (summary.json + game.webm) and press
+  Replay. You watch the fly's cursor crawl across the live table while the DNp09
+  "stop" neuron gauge climbs; when it crosses the click threshold the fly fires
+  and the harness locks onto whatever card is under the cursor.
+
+  Zero dependencies, zero network. Two ways to feed it:
+    1) Drop this file INTO an unzipped `pythia-fly-proof` artifact folder (next
+       to summary.json + game.webm) and open it — it auto-loads both.
+    2) Open it anywhere and use the two file pickers.
+-->
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --line:#2b3340; --ink:#e6edf3;
+    --dim:#8b949e; --amber:#f0a24b; --hot:#ff5a3c; --ok:#3fb950; --cyan:#58c8d8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:18px 22px;border-bottom:1px solid var(--line)}
+  h1{margin:0;font-size:18px;letter-spacing:.2px}
+  h1 small{color:var(--dim);font-weight:400;font-size:13px;margin-left:8px}
+  main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;padding:18px 22px}
+  @media(max-width:860px){main{grid-template-columns:1fr}}
+  .stage{position:relative;background:#000;border:1px solid var(--line);
+    border-radius:10px;overflow:hidden;min-height:280px}
+  .stage video{display:block;width:100%;height:auto}
+  .stage canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .empty{display:flex;align-items:center;justify-content:center;height:280px;
+    color:var(--dim);text-align:center;padding:24px}
+  .side>section{background:var(--panel);border:1px solid var(--line);
+    border-radius:10px;padding:14px 16px;margin-bottom:14px}
+  .side h2{margin:0 0 10px;font-size:12px;text-transform:uppercase;
+    letter-spacing:.8px;color:var(--dim)}
+  .gauge{height:16px;background:#0b0f14;border:1px solid var(--line);
+    border-radius:8px;overflow:hidden;position:relative}
+  .gauge>div{height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--amber),var(--hot));
+    transition:width .05s linear}
+  .gauge .thr{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink);opacity:.6}
+  .hz{display:flex;justify-content:space-between;align-items:baseline;margin-top:6px}
+  .hz b{font-size:22px;font-variant-numeric:tabular-nums}
+  .hz .fired{color:var(--hot);font-weight:700;opacity:0;transition:opacity .1s}
+  .hz .fired.on{opacity:1}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-bottom:1px dashed var(--line)}
+  .kv:last-child{border:0}
+  .kv span:first-child{color:var(--dim)}
+  .kv span:last-child{font-variant-numeric:tabular-nums;text-align:right}
+  .pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;font-weight:600}
+  .pill.pass{background:rgba(63,185,80,.15);color:var(--ok)}
+  .pill.fail{background:rgba(255,90,60,.15);color:var(--hot)}
+  .land{border-left:3px solid var(--amber);padding:6px 10px;margin:8px 0;background:#0b0f14;border-radius:0 6px 6px 0}
+  .land .card{font-weight:600}
+  .land .meta{color:var(--dim);font-size:13px}
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  button{background:var(--amber);color:#1a1206;border:0;border-radius:7px;
+    padding:8px 14px;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  button:disabled{opacity:.4;cursor:default}
+  label.file{display:block;font-size:13px;color:var(--dim);margin:6px 0}
+  input[type=file]{font-size:12px;color:var(--dim)}
+  .note{color:var(--dim);font-size:12.5px}
+</style>
+
+<header>
+  <h1>🪰 Fly-cam <small>watch the 165k-neuron fly decide — Pythia harness (Method A)</small></h1>
+</header>
+
+<main>
+  <div>
+    <div class="stage" id="stage">
+      <div class="empty" id="empty">
+        Load a run to begin.<br>Drop this file next to <code>summary.json</code> +
+        <code>game.webm</code>, or pick them below.
+      </div>
+      <video id="vid" playsinline muted style="display:none"></video>
+      <canvas id="ov"></canvas>
+    </div>
+    <div class="controls">
+      <button id="replay" disabled>▶ Replay the decision</button>
+      <button id="playvid" class="ghost" disabled>▶ Play game video</button>
+      <button id="pausevid" class="ghost" disabled>⏸ Pause</button>
+    </div>
+    <div style="margin-top:10px">
+      <label class="file">summary.json <input id="fJson" type="file" accept=".json,application/json"></label>
+      <label class="file">game.webm (optional) <input id="fVid" type="file" accept="video/*,.webm"></label>
+      <div class="note">Overlay = the fly's cursor path. The gauge = DNp09, the
+        "stopping" descending neuron. It fires (crosses the dashed line) → the
+        harness clicks whatever card is under the cursor.</div>
+    </div>
+  </div>
+
+  <div class="side">
+    <section>
+      <h2>DNp09 — stopping neuron</h2>
+      <div class="gauge"><div id="gfill"></div><div class="thr" id="gthr"></div></div>
+      <div class="hz"><b><span id="hz">0</span> Hz</b><span class="fired" id="fired">● CLICK</span></div>
+    </section>
+    <section>
+      <h2>Run</h2>
+      <div id="runkv"><div class="kv"><span>status</span><span class="note">no run loaded</span></div></div>
+    </section>
+    <section>
+      <h2>Cards the fly played</h2>
+      <div id="lands"><div class="note">—</div></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const vid=$('vid'), ov=$('ov'), ctx=ov.getContext('2d');
+const CLICK_HZ=330, MAX_HZ=450;
+let S=null, traj=[], vidW=720, vidH=1280;
+
+function setGauge(hz, fired){
+  const pct=Math.max(0,Math.min(1,hz/MAX_HZ));
+  $('gfill').style.width=(pct*100)+'%';
+  $('gthr').style.left=(CLICK_HZ/MAX_HZ*100)+'%';
+  $('hz').textContent=Math.round(hz);
+  $('fired').classList.toggle('on',!!fired);
+}
+function fit(){
+  const r=vid.getBoundingClientRect();
+  ov.width=r.width; ov.height=r.height;
+}
+function toDisp(x,y){ return [x/vidW*ov.width, y/vidH*ov.height]; }
+
+function drawPath(uptoIdx){
+  fit(); ctx.clearRect(0,0,ov.width,ov.height);
+  if(!traj.length) return;
+  // full faint path
+  ctx.lineWidth=2; ctx.strokeStyle='rgba(88,200,216,.25)'; ctx.beginPath();
+  traj.forEach(([x,y],i)=>{const[px,py]=toDisp(x,y); i?ctx.lineTo(px,py):ctx.moveTo(px,py);});
+  ctx.stroke();
+  // travelled path
+  const n=Math.max(1,Math.min(uptoIdx,traj.length));
+  ctx.lineWidth=3; ctx.strokeStyle='rgba(240,162,75,.9)'; ctx.beginPath();
+  for(let i=0;i<n;i++){const[px,py]=toDisp(traj[i][0],traj[i][1]); i?ctx.lineTo(px,py):ctx.moveTo(px,py);}
+  ctx.stroke();
+  // cursor head
+  const [hx,hy]=traj[n-1]; const[cx,cy]=toDisp(hx,hy); const hz=traj[n-1][2], clk=traj[n-1][3];
+  ctx.beginPath(); ctx.arc(cx,cy,clk?12:7,0,7); ctx.fillStyle=clk?'rgba(255,90,60,.9)':'rgba(240,162,75,.95)'; ctx.fill();
+  if(clk){ctx.lineWidth=3;ctx.strokeStyle='#fff';ctx.beginPath();ctx.arc(cx,cy,18,0,7);ctx.stroke();}
+  setGauge(hz,clk);
+}
+
+let anim=null;
+function replay(){
+  if(!traj.length) return;
+  if(anim) cancelAnimationFrame(anim);
+  const started=performance.now();
+  function frame(t){
+    // ~one trajectory point per 40ms, so a full turn replays in a couple seconds
+    const i=Math.min(traj.length, Math.floor((t-started)/40)+1);
+    drawPath(i);
+    anim = i<traj.length ? requestAnimationFrame(frame) : null;
+  }
+  anim=requestAnimationFrame(frame);
+}
+
+function renderRun(){
+  const c=S.checks||{}; const pass=(S.result==='PASS');
+  const rows=[
+    ['result',`<span class="pill ${pass?'pass':'fail'}">${S.result||'?'}</span>`],
+    ['mode',S.mode||'—'],['room',S.code||'—'],['motor',S.motor||'—'],
+    ['cards played',(S.cards_played??(S.landed?1:0))],
+    ['turns',S.turns_played??'—'],['misses',S.misses??'—'],
+    ['landed on a card',c.fly_click_landed_on_card?'yes ✓':(S.landed?'yes ✓':'no')],
+    ['all plays legal',c.all_landings_legal===false?'no':'yes ✓'],
+  ];
+  $('runkv').innerHTML=rows.map(([k,v])=>`<div class="kv"><span>${k}</span><span>${v}</span></div>`).join('');
+  const L=S.landings&&S.landings.length?S.landings:(S.landed?[S.landed]:[]);
+  $('lands').innerHTML = L.length? L.map((l,i)=>{
+    const card=(l.card||'').split('\n').filter(Boolean).slice(0,3).join(' ')||'(card)';
+    return `<div class="land"><div class="card">#${i+1} · ${card}</div>
+      <div class="meta">DNp09 ${l.stop_hz??'?'} Hz · step ${l.step??'?'} ·
+      ${l.legal?'legal ✓':'ILLEGAL'} · ${l.played?'played':'re-sampled'}</div></div>`;
+  }).join('') : '<div class="note">This run played no cards — the fly never got a live turn (in a join game the host must press <b>Start</b> after the fly seat fills).</div>';
+}
+
+function loadSummary(obj){
+  S=obj; traj=(S.trajectory||[]).filter(p=>Array.isArray(p)&&p.length>=2);
+  renderRun();
+  $('replay').disabled=!traj.length;
+  if(traj.length) drawPath(traj.length);
+  setGauge(S.landed?S.landed.stop_hz||0:0, !!(S.landed&&S.landed.played));
+}
+function loadVideo(url){
+  $('empty').style.display='none'; vid.style.display='block'; vid.src=url;
+  vid.onloadedmetadata=()=>{ vidW=vid.videoWidth||vidW; vidH=vid.videoHeight||vidH;
+    $('playvid').disabled=$('pausevid').disabled=false; if(traj.length)drawPath(traj.length); };
+}
+
+$('replay').onclick=replay;
+$('playvid').onclick=()=>vid.play();
+$('pausevid').onclick=()=>vid.pause();
+$('fJson').onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>loadSummary(JSON.parse(t)));};
+$('fVid').onchange=e=>{const f=e.target.files[0];if(!f)return;loadVideo(URL.createObjectURL(f));};
+addEventListener('resize',()=>{if(traj.length)drawPath(traj.length);});
+vid.addEventListener('timeupdate',()=>{if(anim===null&&traj.length)drawPath(traj.length);});
+
+// Auto-load if sitting inside an artifact folder.
+fetch('./summary.json').then(r=>r.ok?r.json():Promise.reject()).then(loadSummary).catch(()=>{});
+fetch('./game.webm',{method:'HEAD'}).then(r=>{if(r.ok)loadVideo('./game.webm');}).catch(()=>{});
+</script>
