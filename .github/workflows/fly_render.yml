@@ -1,0 +1,65 @@
+name: fly-render-poc
+# Zero-cost 3D fruit-fly render in the disposable GH-Actions sandbox.
+# Free tools only: Blender (GPL) + ffmpeg. No paid assets, no license.
+on:
+  workflow_dispatch:
+    inputs:
+      frames:   { description: "frames in the hover loop", default: "24" }
+      res:      { description: "square render px",          default: "512" }
+      samples:  { description: "cycles samples",            default: "48" }
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libs for headless Blender + ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libsm6 \
+            libxkbcommon0 libxext6 ffmpeg xz-utils
+
+      - name: Fetch Blender (free, LTS tarball)
+        run: |
+          set -e
+          BV=4.2.0
+          URL="https://download.blender.org/release/Blender4.2/blender-${BV}-linux-x64.tar.xz"
+          echo "downloading $URL"
+          curl -fsSL "$URL" -o blender.tar.xz
+          mkdir -p blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          ./blender/blender --version
+
+      - name: Render the fly (Cycles CPU, transparent loop)
+        run: |
+          ./blender/blender -b -noaudio -P render/fly_scene.py -- \
+            --out render/out \
+            --frames "${{ inputs.frames }}" \
+            --res "${{ inputs.res }}" \
+            --samples "${{ inputs.samples }}"
+          ls -la render/out | head
+
+      - name: Assemble preview loop (mp4 + webm, over dark felt)
+        run: |
+          cd render/out
+          # composite the transparent fly over a poker-felt colour so the
+          # loop is viewable standalone; alpha PNGs are kept for compositing.
+          ffmpeg -y -framerate 24 -i fly_%04d.png \
+            -f lavfi -i color=c=0x0b3d1a:s=512x512 \
+            -filter_complex "[1:v][0:v]overlay=shortest=1,format=yuv420p" \
+            -movflags +faststart fly_loop.mp4
+          ffmpeg -y -framerate 24 -i fly_%04d.png -c:v libvpx-vp9 -pix_fmt yuva420p fly_loop.webm
+          ls -la
+
+      - name: Upload render proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: fly-render-poc
+          path: |
+            render/out/fly_loop.mp4
+            render/out/fly_loop.webm
+            render/out/fly_0001.png
+            render/out/fly_0012.png
+          if-no-files-found: error
