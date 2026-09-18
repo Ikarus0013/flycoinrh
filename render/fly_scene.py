@@ -29,7 +29,11 @@ FRAMES  = int(arg("--frames", "48"))
 RES     = int(arg("--res", "720"))
 SAMPLES = int(arg("--samples", "64"))
 TARGET  = float(arg("--target", "3.0"))   # world size the fly is scaled to
-SPIN    = float(arg("--spin", "0.6"))     # turntable amplitude (radians, seamless)
+SPIN    = float(arg("--spin", "0.4"))     # turntable amplitude (radians, seamless)
+YAW     = float(arg("--yaw", "90"))       # base yaw so the body lies across frame (deg)
+TILT    = float(arg("--tilt", "0"))       # base pitch of the fly (deg)
+ELEV    = float(arg("--elev", "32"))      # camera elevation above horizon (deg)
+AZIM    = float(arg("--azim", "22"))      # camera azimuth off broadside (deg)
 MODEL   = arg("--model", "")              # path to a CC0/CC-BY .glb/.gltf/.blend
 os.makedirs(OUT, exist_ok=True)
 
@@ -139,7 +143,9 @@ dims = fly.dimensions
 longest = max(dims.x, dims.y, dims.z) or 1.0
 s = TARGET / longest
 fly.scale = (s, s, s)
-bpy.ops.object.transform_apply(location=True, rotation=False, scale=True)
+# base orientation: yaw the body across the frame, optional pitch, for a 3/4 view
+fly.rotation_euler = (math.radians(TILT), 0.0, math.radians(YAW))
+bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 print(f"[fly_scene] normalised dims -> {tuple(round(v,3) for v in fly.dimensions)}", flush=True)
 
 # ---- rig: parent to an empty that hovers + turntables (seamless loop) ------
@@ -188,7 +194,12 @@ scene.collection.objects.link(cam); scene.camera = cam
 cam_d.lens = 85
 fov = 2 * math.atan(cam_d.sensor_width / (2 * cam_d.lens))
 dist = (radius * 1.9) / math.tan(fov / 2)
-cam.location = (0, -dist, center.z + radius * 0.15)
+el = math.radians(ELEV); az = math.radians(AZIM)
+# camera on a sphere around the fly: broadside (-Y) + azimuth swing + elevation
+dir_to_cam = Vector((math.sin(az) * math.cos(el),
+                     -math.cos(az) * math.cos(el),
+                     math.sin(el)))
+cam.location = center + dir_to_cam * dist
 look = center - Vector(cam.location)
 cam.rotation_euler = look.to_track_quat('-Z', 'Y').to_euler()
 
