@@ -2,35 +2,42 @@
 Free, zero-cost 3D fruit-fly render for the RON-50 shareable video.
 
 Runs headless in the GH-Actions sandbox:
-    blender -b -P render/fly_scene.py -- --out render/out --frames 24
+    blender -b -P render/fly_scene.py -- --model render/assets/fly_glowbox.glb --out render/out
 
-Builds a recognizable Drosophila (thorax + abdomen + head + red compound
-eyes + wings + legs) procedurally, lights it studio-style, animates a subtle
-hover/wing-flap, and renders a transparent loop with Cycles (CPU, headless-safe).
+Ron picked "photoreal via a free CC0/CC-BY mesh" (card ron50:video:look-decision).
+The default asset is a CC-BY textured housefly (Glowbox 3D, via Objaverse) vendored
+at render/assets/fly_glowbox.glb -- see render/assets/CREDITS.md for attribution.
 
-This is the PLUMBING PROOF for the free pipeline. A CC0 scanned Drosophila
-mesh (Sketchfab/Free3D) drops in via load_cc0_model() for full photoreal with
-zero code change downstream.
+When --model is given the imported mesh (with its own PBR textures) is:
+  * joined into one object, re-centred and scaled to a target size,
+  * parented to an empty that hovers + slowly turns (a seamless loop),
+  * framed automatically by the camera from its real bounding box.
+The imported materials/textures are kept untouched -> photoreal, no downstream change.
+
+With no --model it falls back to the procedural Drosophila (the original plumbing proof).
+Renders a transparent RGBA PNG sequence with Cycles (CPU, headless-safe).
 """
-import bpy, bmesh, math, sys, os
+import bpy, math, sys, os
 from mathutils import Vector
 
 # ---- args after '--' -------------------------------------------------------
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 def arg(name, default):
     return argv[argv.index(name) + 1] if name in argv else default
-OUT    = arg("--out", "render/out")
-FRAMES = int(arg("--frames", "24"))
-RES    = int(arg("--res", "512"))
-SAMPLES= int(arg("--samples", "48"))
-MODEL  = arg("--model", "")          # optional path to a CC0 .glb/.blend
+OUT     = arg("--out", "render/out")
+FRAMES  = int(arg("--frames", "48"))
+RES     = int(arg("--res", "720"))
+SAMPLES = int(arg("--samples", "64"))
+TARGET  = float(arg("--target", "3.0"))   # world size the fly is scaled to
+SPIN    = float(arg("--spin", "0.6"))     # turntable amplitude (radians, seamless)
+MODEL   = arg("--model", "")              # path to a CC0/CC-BY .glb/.gltf/.blend
 os.makedirs(OUT, exist_ok=True)
 
 # ---- clean scene -----------------------------------------------------------
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 
-# ---- materials -------------------------------------------------------------
+# ---- materials (only used by the procedural fallback) ----------------------
 def mat(name, base, rough=0.4, metallic=0.0, emit=None, transmit=0.0):
     m = bpy.data.materials.new(name); m.use_nodes = True
     b = m.node_tree.nodes["Principled BSDF"]
@@ -43,11 +50,6 @@ def mat(name, base, rough=0.4, metallic=0.0, emit=None, transmit=0.0):
         b.inputs["Emission Strength"].default_value = 1.5
     return m
 
-chitin = mat("chitin", (0.12, 0.10, 0.08), rough=0.35, metallic=0.25)
-eye    = mat("eye",    (0.55, 0.05, 0.03), rough=0.15, emit=(0.35, 0.02, 0.01))
-wing   = mat("wing",   (0.85, 0.87, 0.9),  rough=0.05, transmit=0.9)
-wing.blend_method = 'BLEND' if hasattr(wing, 'blend_method') else wing.blend_method
-
 def add_ico(name, loc, scale, m, subd=3):
     bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=subd, radius=1, location=loc)
     o = bpy.context.object; o.name = name; o.scale = scale
@@ -56,75 +58,139 @@ def add_ico(name, loc, scale, m, subd=3):
     return o
 
 def load_cc0_model(path):
-    """Swap-in for a CC0 scanned Drosophila. Returns the imported root or None."""
-    if not path or not os.path.exists(path): return None
-    if path.endswith(".glb") or path.endswith(".gltf"):
+    """Import a CC0/CC-BY scanned/textured fly. Returns list of imported objects."""
+    if not path or not os.path.exists(path):
+        return []
+    before = set(bpy.data.objects)
+    if path.endswith((".glb", ".gltf")):
         bpy.ops.import_scene.gltf(filepath=path)
     elif path.endswith(".blend"):
-        with bpy.data.libraries.load(path) as (src, dst): dst.objects = src.objects
+        with bpy.data.libraries.load(path) as (src, dst):
+            dst.objects = src.objects
         for o in dst.objects:
-            if o is not None: bpy.context.collection.objects.link(o)
+            if o is not None:
+                bpy.context.collection.objects.link(o)
     else:
-        return None
-    return bpy.context.selected_objects[0] if bpy.context.selected_objects else None
+        return []
+    return [o for o in bpy.data.objects if o not in before]
 
-body_root = load_cc0_model(MODEL)
-if body_root is None:
-    # --- procedural Drosophila -------------------------------------------
-    thorax  = add_ico("thorax",  (0, 0, 0),      (0.9, 1.1, 0.85), chitin)
-    abdomen = add_ico("abdomen", (0, -1.7, -0.1),(0.8, 1.5, 0.75), chitin)
-    head    = add_ico("head",    (0, 1.4, 0.15), (0.7, 0.6, 0.7),  chitin)
-    eyeL    = add_ico("eyeL",    (0.45, 1.55, 0.25),(0.35,0.42,0.45), eye)
-    eyeR    = add_ico("eyeR",    (-0.45,1.55, 0.25),(0.35,0.42,0.45), eye)
-    # wings
+def build_procedural():
+    chitin = mat("chitin", (0.12, 0.10, 0.08), rough=0.35, metallic=0.25)
+    eye    = mat("eye",    (0.55, 0.05, 0.03), rough=0.15, emit=(0.35, 0.02, 0.01))
+    wing   = mat("wing",   (0.85, 0.87, 0.9),  rough=0.05, transmit=0.9)
+    thorax  = add_ico("thorax",  (0, 0, 0),       (0.9, 1.1, 0.85), chitin)
+    add_ico("abdomen", (0, -1.7, -0.1), (0.8, 1.5, 0.75), chitin)
+    add_ico("head",    (0, 1.4, 0.15),  (0.7, 0.6, 0.7),  chitin)
+    add_ico("eyeL",    (0.45, 1.55, 0.25), (0.35, 0.42, 0.45), eye)
+    add_ico("eyeR",    (-0.45, 1.55, 0.25), (0.35, 0.42, 0.45), eye)
     for i, sgn in enumerate((1, -1)):
         bpy.ops.mesh.primitive_plane_add(size=1, location=(sgn*1.4, -0.6, 0.7))
         w = bpy.context.object; w.name = f"wing{i}"
         w.scale = (2.3, 1.0, 1.0); w.rotation_euler = (0.25, 0, sgn*0.5)
         w.data.materials.append(wing)
-    # legs
     for i in range(6):
         side = 1 if i % 2 == 0 else -1
         y = 0.4 - (i // 2) * 0.7
         bpy.ops.mesh.primitive_cylinder_add(radius=0.05, depth=1.4,
             location=(side*0.8, y, -0.7), rotation=(0, side*0.7, 0))
-        leg = bpy.context.object; leg.data.materials.append(chitin)
+        bpy.context.object.data.materials.append(chitin)
     parts = [o for o in bpy.data.objects if o.type == 'MESH']
     for p in parts: p.select_set(True)
     bpy.context.view_layer.objects.active = thorax
     bpy.ops.object.join()
-    body_root = bpy.context.object
-body_root.name = "fly"
+    return bpy.context.object
 
-# ---- hover / wing-flap animation ------------------------------------------
+# ---- build / import the fly ------------------------------------------------
+bpy.ops.object.select_all(action='DESELECT')
+imported = load_cc0_model(MODEL)
+mesh_objs = [o for o in imported if o.type == 'MESH']
+
+if mesh_objs:
+    # bake node transforms into the meshes, then join into one object
+    bpy.ops.object.select_all(action='DESELECT')
+    for o in mesh_objs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = mesh_objs[0]
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    if len(mesh_objs) > 1:
+        bpy.ops.object.join()
+    fly = bpy.context.view_layer.objects.active
+    # drop any leftover empties from the import
+    for o in list(imported):
+        if o.name != fly.name and o.type != 'MESH':
+            try: bpy.data.objects.remove(o, do_unlink=True)
+            except Exception: pass
+    print(f"[fly_scene] imported CC-BY mesh from {MODEL}: {len(fly.data.vertices)} verts, "
+          f"{len(fly.data.materials)} materials", flush=True)
+    bpy.ops.object.shade_smooth()
+else:
+    if MODEL:
+        print(f"[fly_scene] WARNING: could not import '{MODEL}', using procedural fly", flush=True)
+    fly = build_procedural()
+
+fly.name = "fly"
+
+# ---- normalise: centre origin on geometry, sit at world origin, scale ------
+bpy.ops.object.select_all(action='DESELECT')
+fly.select_set(True); bpy.context.view_layer.objects.active = fly
+bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
+fly.location = (0, 0, 0)
+dims = fly.dimensions
+longest = max(dims.x, dims.y, dims.z) or 1.0
+s = TARGET / longest
+fly.scale = (s, s, s)
+bpy.ops.object.transform_apply(location=True, rotation=False, scale=True)
+print(f"[fly_scene] normalised dims -> {tuple(round(v,3) for v in fly.dimensions)}", flush=True)
+
+# ---- rig: parent to an empty that hovers + turntables (seamless loop) ------
+piv = bpy.data.objects.new("pivot", None)
+scene.collection.objects.link(piv)
+piv.location = (0, 0, 0)
+fly.parent = piv
+
 scene.frame_start = 1; scene.frame_end = FRAMES
 for f in range(1, FRAMES + 1):
-    t = (f - 1) / FRAMES
-    body_root.location = (0, 0, 0.15 * math.sin(t * 2 * math.pi))
-    body_root.rotation_euler = (0.05 * math.sin(t * 2 * math.pi), 0,
-                                0.08 * math.sin(t * 4 * math.pi))
-    body_root.keyframe_insert("location", frame=f)
-    body_root.keyframe_insert("rotation_euler", frame=f)
+    t = (f - 1) / FRAMES               # 0..1, wraps so frame 1 == frame FRAMES+1
+    piv.location = (0, 0, 0.12 * math.sin(t * 2 * math.pi))
+    piv.rotation_euler = (
+        0.05 * math.sin(t * 2 * math.pi),
+        0.0,
+        SPIN * math.sin(t * 2 * math.pi),
+    )
+    piv.keyframe_insert("location", frame=f)
+    piv.keyframe_insert("rotation_euler", frame=f)
+# linear-ish ease so the loop velocity matches at the seam
+for fc in piv.animation_data.action.fcurves:
+    for kp in fc.keyframe_points:
+        kp.interpolation = 'BEZIER'
 
 # ---- studio lighting -------------------------------------------------------
 world = bpy.data.worlds.new("w"); scene.world = world
 world.use_nodes = True
-world.node_tree.nodes["Background"].inputs[0].default_value = (0.02, 0.02, 0.03, 1)
-world.node_tree.nodes["Background"].inputs[1].default_value = 0.3
-def light(name, loc, energy, size=5):
+world.node_tree.nodes["Background"].inputs[0].default_value = (0.03, 0.05, 0.04, 1)
+world.node_tree.nodes["Background"].inputs[1].default_value = 0.35
+def light(name, loc, energy, size=6):
     l = bpy.data.lights.new(name, 'AREA'); l.energy = energy; l.size = size
     o = bpy.data.objects.new(name, l); o.location = loc; scene.collection.objects.link(o)
-    o.rotation_euler = (math.radians(50), 0, 0)
+    d = (Vector((0, 0, 0.4)) - Vector(loc)); d.normalize()
+    o.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler()
     return o
-key  = light("key",  (3, -4, 5), 900)
-fill = light("fill", (-4, -2, 3), 350)
-rim  = light("rim",  (0, 4, 4), 600)
+light("key",  (3.5, -4.5, 5.5), 1200)
+light("fill", (-4.5, -2.5, 3.0), 450)
+light("rim",  (0, 4.5, 4.5), 800)
 
-# ---- camera ----------------------------------------------------------------
+# ---- camera: auto-frame the fly's bounding sphere --------------------------
+bb = [fly.matrix_world @ Vector(c) for c in fly.bound_box]
+center = sum(bb, Vector()) / 8.0
+radius = max((v - center).length for v in bb)
 cam_d = bpy.data.cameras.new("cam"); cam = bpy.data.objects.new("cam", cam_d)
 scene.collection.objects.link(cam); scene.camera = cam
-cam.location = (0, -7.5, 1.2); cam.rotation_euler = (math.radians(88), 0, 0)
 cam_d.lens = 85
+fov = 2 * math.atan(cam_d.sensor_width / (2 * cam_d.lens))
+dist = (radius * 1.9) / math.tan(fov / 2)
+cam.location = (0, -dist, center.z + radius * 0.15)
+look = center - Vector(cam.location)
+cam.rotation_euler = look.to_track_quat('-Z', 'Y').to_euler()
 
 # ---- render settings (Cycles CPU, transparent, headless-safe) -------------
 scene.render.engine = 'CYCLES'

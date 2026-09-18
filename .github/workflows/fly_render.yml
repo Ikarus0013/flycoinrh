@@ -1,12 +1,13 @@
 name: fly-render-poc
-# Zero-cost 3D fruit-fly render in the disposable GH-Actions sandbox.
-# Free tools only: Blender (GPL) + ffmpeg. No paid assets, no license.
+# Zero-cost 3D fly render in the disposable GH-Actions sandbox.
+# Free tools only: Blender (GPL) + ffmpeg. Mesh is CC-BY (see render/assets/CREDITS.md).
 on:
   workflow_dispatch:
     inputs:
-      frames:   { description: "frames in the hover loop", default: "24" }
-      res:      { description: "square render px",          default: "512" }
-      samples:  { description: "cycles samples",            default: "48" }
+      model:    { description: "path to CC0/CC-BY mesh ('' = procedural)", default: "render/assets/fly_glowbox.glb" }
+      frames:   { description: "frames in the hover loop", default: "48" }
+      res:      { description: "square render px",          default: "720" }
+      samples:  { description: "cycles samples",            default: "64" }
 
 jobs:
   render:
@@ -35,31 +36,40 @@ jobs:
       - name: Render the fly (Cycles CPU, transparent loop)
         run: |
           ./blender/blender -b -noaudio -P render/fly_scene.py -- \
+            --model "${{ inputs.model }}" \
             --out render/out \
             --frames "${{ inputs.frames }}" \
             --res "${{ inputs.res }}" \
             --samples "${{ inputs.samples }}"
           ls -la render/out | head
 
-      - name: Assemble preview loop (mp4 + webm, over dark felt)
+      - name: Assemble preview loops (transparent webm + felt-backed mp4)
         run: |
           cd render/out
-          # composite the transparent fly over a poker-felt colour so the
-          # loop is viewable standalone; alpha PNGs are kept for compositing.
+          # keep the alpha PNGs (uploaded) for the real composite over gameplay.
+          # transparent VP9 webm — the compositing source.
+          ffmpeg -y -framerate 24 -i fly_%04d.png -c:v libvpx-vp9 -pix_fmt yuva420p fly_loop.webm
+          # felt-backed mp4 so the loop is viewable standalone.
           ffmpeg -y -framerate 24 -i fly_%04d.png \
-            -f lavfi -i color=c=0x0b3d1a:s=512x512 \
+            -f lavfi -i color=c=0x0b3d1a:s=${{ inputs.res }}x${{ inputs.res }} \
             -filter_complex "[1:v][0:v]overlay=shortest=1,format=yuv420p" \
             -movflags +faststart fly_loop.mp4
-          ffmpeg -y -framerate 24 -i fly_%04d.png -c:v libvpx-vp9 -pix_fmt yuva420p fly_loop.webm
           ls -la
 
-      - name: Upload render proof
+      - name: Bundle alpha PNGs for compositing
+        run: |
+          cd render/out
+          tar -czf fly_frames_rgba.tar.gz fly_*.png
+          ls -la fly_frames_rgba.tar.gz
+
+      - name: Upload render proof + compositing source
         uses: actions/upload-artifact@v4
         with:
           name: fly-render-poc
           path: |
             render/out/fly_loop.mp4
             render/out/fly_loop.webm
+            render/out/fly_frames_rgba.tar.gz
             render/out/fly_0001.png
-            render/out/fly_0012.png
+            render/out/fly_0024.png
           if-no-files-found: error
